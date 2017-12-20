@@ -8,9 +8,26 @@ data:
   global-config: |-
     [GLOBAL]
     cloud_orchestrator = kubernetes
-    config_nodes = 10.87.65.159
-    controller_nodes = 10.87.65.159
-    analytics_nodes = 10.87.65.159
+    config_nodes = 172.16.65.159
+    controller_nodes = 172.16.65.159
+    analytics_nodes = 172.16.65.159
+  agent-config: |-
+    [AGENT]
+    compile_vrouter_module = True
+    # Optional ctrl_data_network, if different from management
+    ctrl_data_network = "172.16.65.0/24"
+    [KEYSTONE]
+    admin_password = contrail123
+    admin_port = 35357
+    admin_tenant = admin
+    admin_user = admin
+    auth_protocol = http
+    #auth_url = http://172.16.65.159:35357/v2.0
+    insecure = false
+    ip = 172.16.65.159
+    project_domain_name = Default
+    user_domain_name = Default
+    version = v2.0
   kubemanager-config: |-
     [KUBERNETES]
     cluster_name = k8s-default
@@ -18,14 +35,45 @@ data:
     cluster_network = {'domain': 'default-domain', 'project': 'admin', 'name': 'k8s_default_vn'}
     service_subnets = 10.96.0.0/12
     pod_subnets = 10.32.0.0/12
-    api_server = 10.87.65.156
+    api_server = 172.16.65.156
     [AUTH]
-    ip = 10.87.65.159
+    ip = 172.16.65.159
     admin_password = contrail123
     admin_user = admin
     admin_tenant = admin
   kubernetes-agent-config: |-
     [AGENT]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vrouter-bin
+  namespace: kube-system
+data:
+  register-vrouter.sh: |+
+    #!/bin/sh
+    
+    set -ex
+    
+    function register-vrouter {
+    
+            /usr/share/contrail-utils/provision_vrouter.py \
+              --api_server_ip 172.16.65.159  \
+              --host_name $HOST_NAME \
+              --host_ip $HOST_IP \
+              --admin_user admin \
+              --admin_password contrail123 \
+              --admin_tenant_name admin \
+              --openstack_ip 172.16.65.159 \
+               || echo "Contrail api server is not up" && return 1
+    
+            return ""
+    }
+    
+    while ! [[ -z $(register-vrouter) ]];do
+            echo "Waiting for contrail api server to come up"
+            sleep 1s
+    done
 ---
 apiVersion: extensions/v1beta1
 kind: DaemonSet
@@ -109,10 +157,10 @@ spec:
               - key: "node-role.kubernetes.io/master"
                 operator: Exists
       #Enable tolerations for single node setup
-      tolerations:
-      - key: node-role.kubernetes.io/master
-        operator: Exists
-        effect: NoSchedule
+      #tolerations:
+      #- key: node-role.kubernetes.io/master
+      #  operator: Exists
+      #  effect: NoSchedule
       automountServiceAccountToken: false
       hostNetwork: true
       initContainers:
@@ -132,6 +180,23 @@ spec:
           name: opt-cni-bin
         - mountPath: /var/log/contrail/cni
           name: var-log-contrail-cni
+      #- name: register-vrouter-to-controller
+      #  image: contrail-agent-ubuntu16.04:4.1.0.0-7
+      #  command:
+      #  - /tmp/register-vrouter.sh
+      #  env:
+      #  - name: HOST_NAME
+      #    valueFrom:
+      #      fieldRef:
+      #        fieldPath: spec.nodeName
+      #  - name: HOST_IP
+      #    valueFrom:
+      #      fieldRef:
+      #        fieldPath: status.hostIP
+      #  volumeMounts:
+      #  - name: register-vrouter
+      #    mountPath: /tmp/register-vrouter.sh
+      #    subPath: register-vrouter.sh
       containers:
       - name: contrail-agent
         image: "contrail-agent-ubuntu16.04:4.1.0.0-7"
@@ -190,6 +255,10 @@ spec:
       - name: var-log-contrail-cni
         hostPath:
           path: /var/log/contrail/cni/
+      - name: register-vrouter
+        configMap:
+          name: vrouter-bin
+          defaultMode: 0555
 ---
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1beta1
